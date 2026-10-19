@@ -2,8 +2,12 @@
 
 import os
 
+try:
+    from qgis.PyQt.QtGui import QAction      # Qt6 / QGIS 4: QAction lives here
+except ImportError:
+    from qgis.PyQt.QtWidgets import QAction  # Qt5 / QGIS 3.x
 from qgis.PyQt.QtGui import QIcon
-from qgis.PyQt.QtWidgets import QAction, QMessageBox
+from qgis.PyQt.QtWidgets import QMessageBox
 
 
 def resources_path(*parts):

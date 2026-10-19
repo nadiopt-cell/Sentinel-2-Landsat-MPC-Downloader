@@ -252,8 +252,10 @@ def build_index(name, spec, band_paths, out_path, scale=0.0001, offset=0.0,
             band.WriteArray(normalized_difference(a, b, scale, offset), 0, y)
         band.FlushCache()
     except Cancelled:
-        # `finally` below closes the datasets first: on Windows removing an
-        # open file fails with PermissionError and would swallow Cancelled.
+        # Close the datasets *before* unlinking: Python runs `except`
+        # before `finally`, and on Windows removing a still-open file
+        # fails with PermissionError, leaving a partial GeoTIFF behind.
+        band = dst = ds_a = ds_b = None
         try:
             out_path.unlink(missing_ok=True)
         except OSError:

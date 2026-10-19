@@ -246,11 +246,20 @@ class MainDialog(QDialog):
 
     def _take_from_canvas(self):
         canvas = self.iface.mapCanvas()
-        extent = canvas.extent()
-        src = canvas.mapSettings().destinationCrs()
-        dst = QgsCoordinateReferenceSystem("EPSG:4326")
-        if src != dst:
-            extent = QgsCoordinateTransform(src, dst, QgsProject.instance()).transformBoundingBox(extent)
+        try:
+            extent = canvas.extent()
+            src = canvas.mapSettings().destinationCrs()
+            dst = QgsCoordinateReferenceSystem("EPSG:4326")
+            if src != dst:
+                extent = QgsCoordinateTransform(
+                    src, dst, QgsProject.instance()).transformBoundingBox(extent)
+        except Exception as e:  # noqa: BLE001
+            # Degenerate or dateline-crossing extents abort the transform:
+            # show it instead of failing silently inside the slot.
+            QMessageBox.warning(
+                self, "Extent error",
+                f"Could not convert the canvas extent to EPSG:4326:\n{e}")
+            return
         self.min_x.setValue(extent.xMinimum())
         self.min_y.setValue(extent.yMinimum())
         self.max_x.setValue(extent.xMaximum())
