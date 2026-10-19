@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <title>Sentinel-2 MPC Downloader</title>
+  <!-- Earth (lower-left) -->
+  <defs>
+    <radialGradient id="earth" cx="0.35" cy="0.35" r="0.7">
+      <stop offset="0" stop-color="#7ec8ee"/>
+      <stop offset="0.55" stop-color="#2e6fb5"/>
+      <stop offset="1" stop-color="#143a72"/>
+    </radialGradient>
+    <linearGradient id="land" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#6cbf6a"/>
+      <stop offset="1" stop-color="#2f7a31"/>
+    </linearGradient>
+    <linearGradient id="panel" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#1d2a4a"/>
+      <stop offset="0.5" stop-color="#3b5fb0"/>
+      <stop offset="1" stop-color="#1d2a4a"/>
+    </linearGradient>
+    <linearGradient id="body" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#e8e8ec"/>
+      <stop offset="1" stop-color="#9aa0a6"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Earth disk clipped to bottom-left -->
+  <g transform="translate(2,30)">
+    <clipPath id="earthClip">
+      <circle cx="20" cy="20" r="20"/>
+    </clipPath>
+    <circle cx="20" cy="20" r="20" fill="url(#earth)"/>
+    <g clip-path="url(#earthClip)">
+      <!-- Continents (simplified) -->
+      <path d="M6,14 Q12,8 20,12 T34,16 L36,26 Q28,30 22,28 T10,28 Q4,24 6,14 Z"
+            fill="url(#land)" opacity="0.85"/>
+      <path d="M14,30 Q22,28 28,34 L26,42 Q18,42 12,38 Z"
+            fill="url(#land)" opacity="0.85"/>
+    </g>
+    <!-- Earth outline -->
+    <circle cx="20" cy="20" r="20" fill="none" stroke="#0e2a55" stroke-width="1.5"/>
+    <!-- Latitude / longitude hint -->
+    <path d="M2,20 Q20,12 38,20" fill="none" stroke="#bcd6f0" stroke-width="0.6" opacity="0.5"/>
+    <path d="M2,20 Q20,28 38,20" fill="none" stroke="#bcd6f0" stroke-width="0.6" opacity="0.5"/>
+    <path d="M20,0 L20,40" stroke="#bcd6f0" stroke-width="0.6" opacity="0.5"/>
+  </g>
+
+  <!-- Satellite (upper-right) -->
+  <g transform="translate(30,6) rotate(-18)">
+    <!-- Body -->
+    <rect x="10" y="10" width="14" height="10" rx="1.5" fill="url(#body)" stroke="#3a3f47" stroke-width="1"/>
+    <!-- Body windows -->
+    <rect x="12" y="12" width="3" height="2" fill="#1d2a4a"/>
+    <rect x="16" y="12" width="3" height="2" fill="#1d2a4a"/>
+    <rect x="20" y="12" width="2" height="2" fill="#1d2a4a"/>
+    <!-- Sensor (lower cube) -->
+    <rect x="14" y="20" width="6" height="4" fill="#9aa0a6" stroke="#3a3f47" stroke-width="0.8"/>
+    <rect x="15" y="22" width="4" height="1.5" fill="#1d2a4a"/>
+    <!-- Left solar panel -->
+    <rect x="-2" y="12" width="10" height="6" fill="url(#panel)" stroke="#0c1530" stroke-width="0.8"/>
+    <line x1="0" y1="12" x2="0" y2="18" stroke="#0c1530" stroke-width="0.5"/>
+    <line x1="3" y1="12" x2="3" y2="18" stroke="#0c1530" stroke-width="0.5"/>
+    <line x1="6" y1="12" x2="6" y2="18" stroke="#0c1530" stroke-width="0.5"/>
+    <!-- Right solar panel -->
+    <rect x="24" y="12" width="10" height="6" fill="url(#panel)" stroke="#0c1530" stroke-width="0.8"/>
+    <line x1="27" y1="12" x2="27" y2="18" stroke="#0c1530" stroke-width="0.5"/>
+    <line x1="30" y1="12" x2="30" y2="18" stroke="#0c1530" stroke-width="0.5"/>
+    <line x1="33" y1="12" x2="33" y2="18" stroke="#0c1530" stroke-width="0.5"/>
+    <!-- Antenna dish on top -->
+    <ellipse cx="17" cy="7" rx="3" ry="2" fill="#cfd3da" stroke="#3a3f47" stroke-width="0.8"/>
+    <line x1="17" y1="9" x2="17" y2="11" stroke="#3a3f47" stroke-width="0.8"/>
+    <!-- Signal waves -->
+    <path d="M40,4 Q46,6 44,12" fill="none" stroke="#d28a3a" stroke-width="1" opacity="0.8"/>
+    <path d="M44,2 Q52,6 48,14" fill="none" stroke="#d28a3a" stroke-width="1" opacity="0.6"/>
+  </g>
+</svg>
