@@ -57,8 +57,14 @@ def _err(action):
 
 # ---------------------------------------------------------------- resample --
 
-def resample_band(src_path, dst_path, target_res=None):
-    """Resample a band to `target_res` m (bilinear); reuse if present."""
+def resample_band(src_path, dst_path, target_res=None, multithread=True):
+    """Resample a band to `target_res` m (bilinear); reuse if present.
+
+    `multithread` enables GDAL's internal warp threads: leave it on for a
+    single warp (the default — one warp can use every core), pass False
+    when several warps already run in parallel threads (see resample_bands)
+    to avoid oversubscription on small machines.
+    """
     if target_res is None:
         target_res = TARGET_RESOLUTION_M
     dst = Path(dst_path)
@@ -80,7 +86,7 @@ def resample_band(src_path, dst_path, target_res=None):
             format="GTiff", width=width, height=height,
             outputBounds=(minx, miny, maxx, maxy),
             resampleAlg="bilinear", srcNodata=NODATA_DN, dstNodata=NODATA_DN,
-            multithread=True, creationOptions=GTIFF_OPTS + ["TILED=YES"],
+            multithread=multithread, creationOptions=GTIFF_OPTS + ["TILED=YES"],
         )
         out = gdal.Warp(_p(tmp), ds, options=opts)
         if out is None:
@@ -139,9 +145,13 @@ def resample_bands(band_paths, work_dir, cancelled=None, max_workers=3,
 
     pool = ThreadPoolExecutor(max_workers=workers)
     try:
+        # multithread=False: the pool itself provides the parallelism, so
+        # each GDAL warp stays single-threaded (workers x 1 threads instead
+        # of workers x cpu_count on machines with few cores).
         futures = {
             pool.submit(resample_band, p,
-                        work_dir / f"{band}_{target_res}m.tif", target_res): band
+                        work_dir / f"{band}_{target_res}m.tif", target_res,
+                        False): band
             for band, p in todo.items()
         }
         for fut in as_completed(futures):
@@ -215,7 +225,14 @@ def normalized_difference(a, b, scale=0.0001, offset=0.0):
 
 def build_index(name, spec, band_paths, out_path, scale=0.0001, offset=0.0,
                 cancelled=lambda: False):
-    """Build a normalized-difference index from a spec dict."""
+    """Build a normalized-difference index from a spec dict.
+
+    A single (scale, offset) pair is applied to BOTH input bands. That is
+    correct for every supported product (Sentinel-2 L2A shares one
+    baseline offset grid; Landsat C2 L2 scales all reflectance assets
+    alike) — see the note in pipeline.run for a future index that would
+    need per-band scaling.
+    """
     if spec.get("type") != "index" or spec.get("kind") != "normalized_difference":
         raise ValueError(f"{name} is not a normalized-difference index")
     pa, pb = (band_paths.get(b) for b in spec["bands"])

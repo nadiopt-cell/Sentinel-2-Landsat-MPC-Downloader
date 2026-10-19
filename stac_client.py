@@ -52,7 +52,9 @@ def _next_page_request(page_body, current_payload):
         if method == "POST":
             link_body = link.get("body") or {}
             if link.get("merge"):
-                merged = dict(current_payload)
+                # current_payload is None when the previous page was a GET
+                # link (which carries no body); merging then means "over {}".
+                merged = dict(current_payload or {})
                 merged.update(link_body)
                 return "POST", href, merged
             return "POST", href, link_body

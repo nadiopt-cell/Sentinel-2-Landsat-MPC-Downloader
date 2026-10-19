@@ -31,11 +31,11 @@ class SentinelPlugin:
             "from Microsoft Planetary Computer")
         self.action.triggered.connect(self.run)
         self.iface.addToolBarIcon(self.action)
-        self.iface.addPluginToMenu("&Sentinel", self.action)
+        self.iface.addPluginToMenu("&Sentinel / Landsat", self.action)
 
     def unload(self):
         if self.action:
-            self.iface.removePluginMenu("&Sentinel", self.action)
+            self.iface.removePluginMenu("&Sentinel / Landsat", self.action)
             self.iface.removeToolBarIcon(self.action)
             self.action.deleteLater()
             self.action = None

@@ -41,6 +41,15 @@ def _thumb_filename(key):
     return f"{safe}-{digest}.png"
 
 
+def _safe_mtime(p):
+    """mtime that tolerates a file vanishing mid-listing (antivirus, a
+    second QGIS instance pruning the same cache): treat as oldest."""
+    try:
+        return p.stat().st_mtime
+    except OSError:
+        return 0.0
+
+
 def _prune_thumb_cache(max_files=THUMB_CACHE_KEEP):
     """Drop the oldest cached previews when the cache grows unbounded."""
     d = _thumb_cache_dir()
@@ -50,7 +59,7 @@ def _prune_thumb_cache(max_files=THUMB_CACHE_KEEP):
         return
     if len(files) <= max_files:
         return
-    files.sort(key=lambda p: p.stat().st_mtime)
+    files.sort(key=_safe_mtime)
     for p in files[:len(files) - max_files]:
         try:
             p.unlink()
@@ -131,7 +140,11 @@ class SceneDialog(QDialog):
             cc = stac_client.feature_cloud_cover(feat)
             cc_item = QTableWidgetItem()
             if cc is not None:
-                cc_item.setData(Qt.ItemDataRole.DisplayRole, round(float(cc), 1))  # numeric sort
+                try:
+                    cc_item.setData(Qt.ItemDataRole.DisplayRole,
+                                    round(float(cc), 1))     # numeric sort
+                except (TypeError, ValueError):
+                    cc_item.setText("-")   # keep the row usable on bad data
             else:
                 cc_item.setText("-")
             cc_item.setTextAlignment(center)

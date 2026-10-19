@@ -92,8 +92,3 @@ def required_bands(preset_names):
         elif spec["type"] == "index":
             bands.update(spec["bands"])
     return bands
-
-
-def bands_to_resample(band_names):
-    """Return subset of bands that need resampling to TARGET_RESOLUTION_M."""
-    return {b for b in band_names if BAND_RESOLUTION.get(b, 10) > TARGET_RESOLUTION_M}

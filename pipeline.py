@@ -88,6 +88,12 @@ def run(feature, product_names, out_dir, report, cancelled, keep_bands=True,
         raise Cancelled()
 
     scale_band, scale_default = band_defaults
+    # The red-band (scale, offset) pair is applied to both channels of an
+    # index. This holds for every supported product: all Sentinel-2 L2A
+    # bands share the same baseline offset grid, and Landsat C2 L2 scales
+    # every reflectance asset identically (2.75e-05 / -0.2). An index that
+    # mixes differently scaled bands (e.g. a future NDSI) must read the
+    # scale/offset per band instead of reusing this pair.
     scale, offset = stac_client.dn_scale_offset(feature, scale_band,
                                                 default=scale_default)
 

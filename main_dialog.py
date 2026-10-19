@@ -51,7 +51,9 @@ TAB_LANDSAT = 1
 
 
 def _default_out_dir():
-    return Path.home() / "Sentinel2_MPC"
+    # Neutral name (both Sentinel-2 and Landsat land here). Existing
+    # installations keep their old value via QSettings.
+    return Path.home() / "MPC_Downloader"
 
 
 class MainDialog(QDialog):
