@@ -263,7 +263,11 @@ class SceneDialog(QDialog):
         """Draw the footprint of the currently selected row on the canvas."""
         if self._rubber is None:
             return
-        self._rubber.reset()
+        try:
+            self._rubber.reset()
+        except RuntimeError:
+            self._rubber = None   # canvas (and the band) already destroyed
+            return
         rows = self.table.selectionModel().selectedRows() \
             if self.table.selectionModel() else []
         key = self._row_key(rows[0].row()) if rows else None
@@ -294,7 +298,18 @@ class SceneDialog(QDialog):
         if self._worker is not None and not self._worker.stop(5000):
             self._worker.detach()  # never destroy a running QThread
         if self._rubber is not None:
-            self._rubber.reset()
-            self._rubber.deleteLater()
-            self._rubber = None
+            self._clear_footprint()
         super().done(result)
+
+    def _clear_footprint(self):
+        """Remove the outline from the map canvas. QgsRubberBand is a
+        QGraphicsItem (not a QObject), so it has no deleteLater(): detach
+        it from the canvas scene and drop the Python reference instead."""
+        band, self._rubber = self._rubber, None
+        try:
+            band.reset()
+            scene = band.scene()
+            if scene is not None:
+                scene.removeItem(band)
+        except RuntimeError:
+            pass  # the underlying C++ object is already gone
