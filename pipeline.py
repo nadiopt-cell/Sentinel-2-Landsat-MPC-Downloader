@@ -146,3 +146,43 @@ def run(feature, product_names, out_dir, report, cancelled, keep_bands=True,
                 pass
     report(100, "Done.")
     return outputs
+
+
+def run_batch(features, product_names, out_dir, report, cancelled,
+              keep_bands=True, band_names=(), source="S2", mission=None):
+    """Run run() for several scenes in one go.
+
+    Each scene keeps its own output subfolder (<out_dir>/<scene_id>/).
+    Scene-local progress (1..100 from run()) is mapped onto the overall
+    0..100 scale and prefixed with "[i/N] <scene_id>" so the UI shows
+    which scene is being processed. A failing scene is recorded and the
+    batch continues; the batch fails only if nothing was built at all.
+    Returns {"outputs": [...], "errors": [...], "total": N}.
+    """
+    outputs, errors = [], []
+    total = max(1, len(features))
+    for i, feature in enumerate(features):
+        if cancelled():
+            raise Cancelled()
+        scene_id = feature.get("id", "scene")
+        prefix = "[{}/{}] {} - ".format(i + 1, total, scene_id)
+
+        def scene_report(pct, msg="", _i=i, _p=prefix):
+            report(int((_i + min(max(pct, 0), 100) / 100.0) * 100 / total),
+                   _p + str(msg))
+
+        try:
+            outputs.extend(run(feature, product_names, out_dir, scene_report,
+                               cancelled, keep_bands, band_names=band_names,
+                               source=source, mission=mission))
+        except Cancelled:
+            raise
+        except Exception as e:  # noqa: BLE001   keep going with the rest
+            errors.append("{}: {}".format(scene_id, e))
+    if errors and not outputs:
+        raise RuntimeError("All {} scene(s) failed:\n{}".format(
+            total, "\n".join(errors)))
+    report(100, "Done: {} of {} scene(s) built{}.".format(
+        total - len(errors), total,
+        ", {} failed".format(len(errors)) if errors else ""))
+    return {"outputs": outputs, "errors": errors, "total": len(features)}

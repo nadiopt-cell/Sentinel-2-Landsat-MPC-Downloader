@@ -1,8 +1,8 @@
 """
-Main dialog: AOI, dates, cloud cover, products -> search -> pick scene ->
-download + build. Two source tabs: Sentinel-2 L2A and Landsat C2 L2
-(missions selected inside the Landsat tab). All network/disk/GDAL work
-runs in a background thread.
+Main dialog: AOI, dates, cloud cover, products -> search -> pick scene(s) ->
+download + build (one output folder per scene). Two source tabs: Sentinel-2
+L2A and Landsat C2 L2 (missions selected inside the Landsat tab). All
+network/disk/GDAL work runs in a background thread.
 """
 
 from pathlib import Path
@@ -63,7 +63,7 @@ class MainDialog(QDialog):
         self.iface = iface
         self.setWindowTitle("Sentinel-2 / Landsat from Microsoft Planetary Computer")
         self.resize(560, 720)
-        self._scene_feature = None
+        self._scene_features = []
         self._worker = None
         self._scene_dialog = None
         # Source and product selection are frozen at search time so that
@@ -341,7 +341,7 @@ class MainDialog(QDialog):
 
     def _set_busy(self, busy):
         self.search_btn.setEnabled(not busy)
-        self.download_btn.setEnabled(not busy and self._scene_feature is not None)
+        self.download_btn.setEnabled(not busy and bool(self._scene_features))
         self.cancel_btn.setEnabled(busy)
 
     def _start(self, fn, on_success, busy_text):
@@ -422,7 +422,7 @@ class MainDialog(QDialog):
                                     "Pick at least one synthesis or individual band.")
                 return
 
-        self._scene_feature = None
+        self._scene_features = []
         self._pending = {
             "source": source, "mission": mission,
             "products": products, "bands": bands,
@@ -466,16 +466,23 @@ class MainDialog(QDialog):
 
     def _on_scene_accepted(self):
         dlg = self._scene_dialog
-        if dlg is not None and dlg.selected_feature is not None:
-            self._scene_feature = dlg.selected_feature
+        if dlg is not None and dlg.selected_features:
+            self._scene_features = dlg.selected_features
             self.download_btn.setEnabled(True)
-            self.status_label.setText(
-                f"Scene selected: {self._scene_feature.get('id', '')}. "
-                "Click 'Download and build'.")
+            n = len(self._scene_features)
+            first = self._scene_features[0].get('id', '')
+            if n == 1:
+                self.status_label.setText(
+                    f"Scene selected: {first}. Click 'Download and build'.")
+            else:
+                self.status_label.setText(
+                    f"{n} scenes selected (first: {first}). "
+                    "Click 'Download and build' - each scene goes to its "
+                    "own folder.")
         self._close_scene_dialog()
 
     def _on_scene_rejected(self):
-        if self._scene_feature is None:
+        if not self._scene_features:
             self.status_label.setText("Selection cancelled.")
         self._close_scene_dialog()
 
@@ -490,11 +497,11 @@ class MainDialog(QDialog):
     # ---- download + build ----
 
     def _on_download(self):
-        feat = self._scene_feature
+        feats = self._scene_features
         pending = self._pending
-        if not feat or not pending:
+        if not feats or not pending:
             QMessageBox.warning(self, "Nothing to do",
-                                "Search for scenes and select one first.")
+                                "Search for scenes and select at least one first.")
             return
         products, bands = pending["products"], pending["bands"]
         if not products and not bands:
@@ -505,24 +512,31 @@ class MainDialog(QDialog):
         source, mission = pending["source"], pending["mission"]
 
         def job(w):
-            return pipeline.run(feat, products, out_dir, w.report, w.is_cancelled,
-                                keep, band_names=bands, source=source,
-                                mission=mission)
+            return pipeline.run_batch(feats, products, out_dir, w.report,
+                                      w.is_cancelled, keep, band_names=bands,
+                                      source=source, mission=mission)
 
         self._start(job, self._on_build_done, "Starting...")
 
-    def _on_build_done(self, outputs):
+    def _on_build_done(self, result):
         # Layers are created in the GUI thread.
         layers = []
         try:
-            for o in outputs:
+            for o in result["outputs"]:
                 layers.append(add_to_project(o["path"], o["name"], o["palette"]))
         except Exception as e:  # noqa: BLE001
             QMessageBox.critical(self, "Failed to add layer", str(e))
             return
+        errors = result.get("errors", [])
         if layers:
             self._zoom_to(layers[0])
-        self.status_label.setText(f"Done: {len(layers)} layer(s) added.")
+        if errors:
+            self.status_label.setText(
+                f"Done: {len(layers)} layer(s) added; "
+                f"{len(errors)} scene(s) failed.")
+            QMessageBox.warning(self, "Some scenes failed", "\n".join(errors))
+        else:
+            self.status_label.setText(f"Done: {len(layers)} layer(s) added.")
 
     def _zoom_to(self, layer):
         canvas = self.iface.mapCanvas()

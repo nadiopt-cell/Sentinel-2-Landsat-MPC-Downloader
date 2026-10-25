@@ -13,8 +13,11 @@ from qgis.PyQt.QtWidgets import (
     QAbstractItemView,
     QDialog,
     QDialogButtonBox,
+    QHBoxLayout,
     QLabel,
+    QMessageBox,
     QProgressBar,
+    QPushButton,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -40,7 +43,7 @@ except AttributeError:                # older QGIS 3.x
     from qgis.core import QgsWkbTypes
     _LINE_GEOMETRY = QgsWkbTypes.LineGeometry
 
-THUMB_COL, DATE_COL, CLOUD_COL, TILE_COL, ID_COL = range(5)
+CHECK_COL, THUMB_COL, DATE_COL, CLOUD_COL, TILE_COL, ID_COL = range(6)
 THUMB_SIZE = 96
 THUMB_MAX = 150          # cap preview downloads on very large result sets
 THUMB_CACHE_KEEP = 400   # max files kept in the thumbnail cache dir
@@ -126,7 +129,7 @@ class SceneDialog(QDialog):
             key = fid if fid not in self.features else f"{fid}#{i}"
             self.features[key] = f
         self.token = token
-        self.selected_feature = None
+        self._picked_key = None   # single scene chosen by double-click / OK
         self._worker = None
         self._build_ui(len(features))
         self._populate()
@@ -136,17 +139,19 @@ class SceneDialog(QDialog):
         layout = QVBoxLayout(self)
         self.info_label = QLabel(
             f"Found {count} scenes (newest first; click a header to sort). "
-            "The selected scene's footprint is outlined on the map.")
+            "Check scenes to download several at once; the highlighted "
+            "row's footprint is outlined on the map.")
         layout.addWidget(self.info_label)
 
-        t = self.table = QTableWidget(0, 5, self)
+        t = self.table = QTableWidget(0, 6, self)
         t.setHorizontalHeaderLabels(
-            ["Preview", "Date (UTC)", "Cloud %", "Tile", "Feature id"])
+            ["", "Preview", "Date (UTC)", "Cloud %", "Tile", "Feature id"])
         t.setIconSize(QSize(THUMB_SIZE, THUMB_SIZE))
         t.verticalHeader().setDefaultSectionSize(THUMB_SIZE + 6)
         t.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         t.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         t.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        t.setColumnWidth(CHECK_COL, 26)
         t.setColumnWidth(THUMB_COL, THUMB_SIZE + 16)
         t.setColumnWidth(DATE_COL, 160)
         t.setColumnWidth(CLOUD_COL, 80)
@@ -156,6 +161,19 @@ class SceneDialog(QDialog):
         t.cellDoubleClicked.connect(lambda row, _c: self._accept_row(row))
         t.itemSelectionChanged.connect(self._show_footprint)
         layout.addWidget(t)
+
+        checks_row = QHBoxLayout()
+        self.check_all_btn = QPushButton("Check all")
+        self.check_all_btn.setToolTip("Check every scene for a batch download")
+        self.check_all_btn.clicked.connect(
+            lambda: self._set_all_checks(Qt.CheckState.Checked))
+        self.clear_checks_btn = QPushButton("Clear checks")
+        self.clear_checks_btn.clicked.connect(
+            lambda: self._set_all_checks(Qt.CheckState.Unchecked))
+        checks_row.addWidget(self.check_all_btn)
+        checks_row.addWidget(self.clear_checks_btn)
+        checks_row.addStretch(1)
+        layout.addLayout(checks_row)
 
         self.progress = QProgressBar(self)
         self.progress.setRange(0, 100)
@@ -174,6 +192,13 @@ class SceneDialog(QDialog):
         center = Qt.AlignmentFlag.AlignCenter
         role = Qt.ItemDataRole.UserRole
         for row, (key, feat) in enumerate(self.features.items()):
+            chk = QTableWidgetItem("")
+            chk.setFlags(Qt.ItemFlag.ItemIsUserCheckable
+                         | Qt.ItemFlag.ItemIsEnabled
+                         | Qt.ItemFlag.ItemIsSelectable)
+            chk.setCheckState(Qt.CheckState.Unchecked)
+            chk.setToolTip("Check to include this scene in the download")
+            t.setItem(row, CHECK_COL, chk)
             ph = QTableWidgetItem("")
             t.setItem(row, THUMB_COL, ph)
 
@@ -210,6 +235,18 @@ class SceneDialog(QDialog):
         if item is None:
             return None
         return item.data(Qt.ItemDataRole.UserRole) or item.text()
+
+    def _set_all_checks(self, state):
+        for row in range(self.table.rowCount()):
+            item = self.table.item(row, CHECK_COL)
+            if item is not None:
+                item.setCheckState(state)
+
+    def _checked_rows(self):
+        return [row for row in range(self.table.rowCount())
+                if self.table.item(row, CHECK_COL) is not None
+                and self.table.item(row, CHECK_COL).checkState()
+                == Qt.CheckState.Checked]
 
     # ---- thumbnails (background) ----
 
@@ -282,17 +319,43 @@ class SceneDialog(QDialog):
     # ---- selection ----
 
     def _on_ok(self):
-        rows = self.table.selectionModel().selectedRows()
+        if self._checked_rows():
+            self.accept()                      # batch: every checked scene
+            return
+        model = self.table.selectionModel()
+        rows = model.selectedRows() if model else []
         if rows:
-            self._accept_row(rows[0].row())
+            self._accept_row(rows[0].row())    # single-scene fallback
+            return
+        QMessageBox.information(self, "No scenes selected",
+                                "Check at least one scene (or select a row).")
 
     def _accept_row(self, row):
         key = self._row_key(row)
         if key is None:
             return
-        self.selected_feature = self.features.get(key)
-        if self.selected_feature is not None:
-            self.accept()
+        self._picked_key = key
+        self.accept()
+
+    @property
+    def selected_features(self):
+        """Scenes to download: every checked row (in display order), or the
+        single scene chosen by a double-click / highlighted-row OK."""
+        if self._picked_key is not None:
+            feat = self.features.get(self._picked_key)
+            return [feat] if feat is not None else []
+        feats = []
+        for row in self._checked_rows():
+            feat = self.features.get(self._row_key(row))
+            if feat is not None:
+                feats.append(feat)
+        return feats
+
+    @property
+    def selected_feature(self):
+        """First selected scene or None (kept for compatibility)."""
+        feats = self.selected_features
+        return feats[0] if feats else None
 
     def done(self, result):
         if self._worker is not None and not self._worker.stop(5000):

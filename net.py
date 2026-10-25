@@ -10,7 +10,7 @@ try:
 except ImportError:  # pragma: no cover
     from requests.packages.urllib3.util.retry import Retry  # type: ignore
 
-USER_AGENT = "qgis-sentinel-mpc-plugin/0.4.5"
+USER_AGENT = "qgis-sentinel-mpc-plugin/0.4.6"
 
 _RETRY_KWARGS = dict(
     total=4,
