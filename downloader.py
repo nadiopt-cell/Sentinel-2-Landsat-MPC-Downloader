@@ -13,6 +13,7 @@ that ignore Range are handled too (the part is rewritten from scratch).
 
 import os
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
@@ -28,6 +29,14 @@ class DownloadError(Exception):
 
 
 CHUNK_SIZE = 1024 * 1024
+
+# Minimum wall time between two progress callbacks. Callbacks fire from
+# download threads; each one becomes a cross-thread Qt signal and a status
+# repaint in the GUI thread. With per-megabyte reporting a multi-GB Landsat
+# batch produced thousands of signals and starved the Qt event loop (the
+# plugin window stopped responding and kept resizing). ~3 updates per
+# second is more than enough for a progress bar.
+REPORT_INTERVAL = 0.35
 
 
 def _download_one(url, dest_path, timeout, cancelled, on_bytes, session=None):
@@ -98,7 +107,10 @@ def download(urls_to_paths, max_workers=4, progress_cb=None, timeout=120,
     """Download (url, dest_path) pairs in parallel.
 
     progress_cb(done_bytes, total_bytes, done_files, total_files) is called
-    from worker threads (total_bytes grows as sizes become known).
+    from worker threads (total_bytes grows as sizes become known) and is
+    throttled to one call per REPORT_INTERVAL seconds, except that every
+    finished file always produces a callback (per-megabyte reporting used
+    to flood the GUI thread's event queue and froze the plugin window).
     Returns {url: path}. Raises Cancelled or DownloadError (listing all
     failures).
 
@@ -110,14 +122,21 @@ def download(urls_to_paths, max_workers=4, progress_cb=None, timeout=120,
         return {}
 
     lock = threading.Lock()
-    state = {"done": 0, "total": 0, "files": 0}
+    state = {"done": 0, "total": 0, "files": 0, "last_t": 0.0, "last_files": -1}
 
     def on_bytes(delta_done, delta_total):
+        # Byte accounting is always exact; only the callback is throttled.
+        now = time.monotonic()
+        fire = False
         with lock:
             state["done"] += delta_done
             state["total"] += delta_total
             snap = (state["done"], state["total"], state["files"])
-        if progress_cb:
+            if (snap[2] != state["last_files"]
+                    or now - state["last_t"] >= REPORT_INTERVAL):
+                state["last_t"], state["last_files"] = now, snap[2]
+                fire = True
+        if progress_cb and fire:
             progress_cb(snap[0], snap[1], snap[2], len(pairs))
 
     results, errors = {}, {}

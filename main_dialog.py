@@ -15,6 +15,7 @@ from qgis.core import (
 from qgis.PyQt.QtCore import QDate, QSettings, Qt
 from qgis.PyQt.QtWidgets import (
     QAbstractItemView,
+    QApplication,
     QCheckBox,
     QComboBox,
     QDateEdit,
@@ -46,6 +47,21 @@ from .worker import Worker
 SETTINGS = "sentinel_mpc/"
 DEFAULT_BBOX = (-10.0, 50.0, 10.0, 60.0)
 ALL_BANDS_ITEM = "All bands"   # meta-item: select/deselect every band at once
+
+# Progress messages are clipped to this length so they never wrap past the
+# two lines reserved for the status label (long scene ids plus download
+# statistics used to change the wrapped label's height on every update,
+# which kept resizing the whole dialog).
+MSG_MAX = 130
+
+
+def _clip_msg(msg):
+    """Keep both ends of an over-long progress message."""
+    if len(msg) <= MSG_MAX:
+        return msg
+    head = MSG_MAX // 2
+    tail = MSG_MAX - head - 3
+    return msg[:head] + "..." + msg[-tail:]
 
 TAB_S2 = 0
 TAB_LANDSAT = 1
@@ -153,6 +169,11 @@ class MainDialog(QDialog):
         layout.addWidget(self.progress)
         self.status_label = QLabel("Ready.")
         self.status_label.setWordWrap(True)
+        # Reserve two text lines permanently: a word-wrapped label whose
+        # text changes height makes the whole dialog resize (the window
+        # visibly "breathed" during downloads).
+        fm = self.status_label.fontMetrics()
+        self.status_label.setFixedHeight(2 * fm.lineSpacing() + 6)
         layout.addWidget(self.status_label)
 
         self.buttons = QDialogButtonBox()
@@ -358,7 +379,7 @@ class MainDialog(QDialog):
         self.progress.setRange(0, 100)
         self.progress.setValue(pct)
         if msg:
-            self.status_label.setText(msg)
+            self.status_label.setText(_clip_msg(msg))
 
     def _finish(self, on_success, result):
         self._set_busy(False)
@@ -519,14 +540,24 @@ class MainDialog(QDialog):
         self._start(job, self._on_build_done, "Starting...")
 
     def _on_build_done(self, result):
-        # Layers are created in the GUI thread.
+        # Layers are created in the GUI thread. With several scenes and
+        # many products this is the slowest part, so keep the dialog busy
+        # and say so instead of silently blocking in the slot.
+        outputs = result["outputs"]
+        self._set_busy(True)
+        self.progress.setValue(100)
+        self.status_label.setText(
+            f"Adding {len(outputs)} layer(s) to the project...")
+        QApplication.processEvents()
         layers = []
         try:
-            for o in result["outputs"]:
+            for o in outputs:
                 layers.append(add_to_project(o["path"], o["name"], o["palette"]))
         except Exception as e:  # noqa: BLE001
+            self._set_busy(False)
             QMessageBox.critical(self, "Failed to add layer", str(e))
             return
+        self._set_busy(False)
         errors = result.get("errors", [])
         if layers:
             self._zoom_to(layers[0])
