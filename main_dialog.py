@@ -299,7 +299,10 @@ class MainDialog(QDialog):
 
         note = QLabel("Note: Landsat 1-3 (MSS) are not hosted on Planetary "
                       "Computer; Landsat 4 (1982) is the earliest available "
-                      "mission. All bands are delivered at 30 m.")
+                      "mission. All bands are delivered at 30 m. Landsat "
+                      "revisits the same area every 16 days (8 days for "
+                      "Landsat 8 + 9 combined), so short date windows are "
+                      "often empty.")
         note.setWordWrap(True)
         v.addWidget(note)
 
@@ -485,16 +488,19 @@ class MainDialog(QDialog):
                 return
 
         self._scene_features = []
-        self._pending = {
-            "source": source, "mission": mission,
-            "products": products, "bands": bands,
-        }
-        self._close_scene_dialog()      # a new search invalidates the old picker
         bbox = self._bbox()
         d0 = self.date_start.date().toString("yyyy-MM-dd")
         d1 = self.date_end.date().toString("yyyy-MM-dd")
         cloud = self.cloud.value()
         collection = landsat.COLLECTION if source == "Landsat" else stac_client.S2L2A_COLLECTION
+        # bbox/dates are kept for the empty-search probe (see
+        # _probe_empty_search).
+        self._pending = {
+            "source": source, "mission": mission,
+            "products": products, "bands": bands,
+            "bbox": bbox, "d0": d0, "d1": d1,
+        }
+        self._close_scene_dialog()      # a new search invalidates the old picker
 
         def job(w):
             platforms = [mission] if source == "Landsat" else None
@@ -510,8 +516,7 @@ class MainDialog(QDialog):
         features, token = result
         self.progress.setValue(0)
         if not features:
-            self.status_label.setText("No scenes found.")
-            QMessageBox.information(self, "No scenes", "No scenes matched the criteria.")
+            self._probe_empty_search()
             return
         self._close_scene_dialog()      # a previous picker may still be open
         dlg = SceneDialog(features, token, self.iface.mapCanvas(), parent=self)
@@ -525,6 +530,64 @@ class MainDialog(QDialog):
         self.status_label.setText(
             "Pick a scene — its footprint is outlined on the map "
             "(pan/zoom to inspect). Press OK in the picker to confirm.")
+
+    def _probe_empty_search(self):
+        """Empty result: probe the catalog with a wider, filter-free window
+        and tell the user whether the filters were too strict (Landsat
+        revisit gap) or the catalog is unreachable (network/access)."""
+        pending = self._pending or {}
+        bbox, d0, d1 = pending.get("bbox"), pending.get("d0"), pending.get("d1")
+        if not bbox or not d0 or not d1:
+            self.status_label.setText("No scenes found.")
+            QMessageBox.information(self, "No scenes", "No scenes matched the criteria.")
+            return
+        collection = (landsat.COLLECTION if pending.get("source") == "Landsat"
+                      else stac_client.S2L2A_COLLECTION)
+
+        def job(w):
+            return pipeline.diagnose_empty(bbox, d0, d1, collection)
+
+        self._start(job, self._on_probe_done,
+                    "No scenes matched - probing the catalog for nearby scenes...")
+
+    def _on_probe_done(self, diag):
+        self.progress.setValue(0)
+        pending = self._pending or {}
+        win = f"{pending.get('d0', '?')} .. {pending.get('d1', '?')}"
+
+        def _ex(e):
+            cloud = e.get("cloud")
+            c = (f"{cloud:.0f}% cloud" if isinstance(cloud, (int, float))
+                 else "cloud ?")
+            plat = e.get("platform") or "?"
+            return f"{e.get('datetime', '?')} ({plat}, {c})"
+
+        if diag.get("kind") == "scenes" and diag.get("examples"):
+            ex = "; ".join(_ex(e) for e in diag["examples"][:3])
+            self.status_label.setText(
+                "No scenes matched your filters, but the catalog has scenes "
+                "nearby (see message).")
+            QMessageBox.information(
+                self, "No scenes matched your filters",
+                f"No scenes matched your filters in {win}.\n\n"
+                f"Without filters the catalog has scenes for this area within "
+                f"+/-{diag.get('days', 16)} days, for example: {ex}.\n\n"
+                "Landsat revisits the same place only every 16 days (8 days "
+                "with Landsat 8+9 combined), so a short date window is often "
+                "empty: widen the dates, raise the max cloud cover, or pick "
+                "another mission.")
+        else:
+            self.status_label.setText(
+                "The catalog returned nothing even without filters.")
+            QMessageBox.warning(
+                self, "Catalog returned nothing",
+                f"No scenes in {win}, and even a filter-free search "
+                f"+/-{diag.get('days', 16)} days around it returned nothing.\n\n"
+                "Check your internet connection and access to "
+                "planetarycomputer.microsoft.com (the service may be "
+                "temporarily unavailable or restricted in your region) and try "
+                "again. If the Sentinel-2 tab finds scenes, the connection is "
+                "fine and the area/date range is the cause.")
 
     def _on_scene_accepted(self):
         dlg = self._scene_dialog

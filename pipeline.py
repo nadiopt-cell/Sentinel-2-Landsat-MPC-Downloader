@@ -11,6 +11,7 @@ this module only returns the list of produced files.
 """
 
 import re
+import datetime
 from pathlib import Path
 
 from . import downloader, landsat, processor, stac_client, syntheses
@@ -186,3 +187,36 @@ def run_batch(features, product_names, out_dir, report, cancelled,
         total - len(errors), total,
         ", {} failed".format(len(errors)) if errors else ""))
     return {"outputs": outputs, "errors": errors, "total": len(features)}
+
+
+def diagnose_empty(bbox, date_start, date_end, collection, pad_days=16,
+                   limit=30, timeout=60, search_fn=None):
+    """Explain an empty search result (runs in a worker thread).
+
+    Repeats the search with the date window widened by `pad_days` on both
+    sides and WITHOUT the cloud/mission filters. Landsat revisits one place
+    only every 16 days, so an empty result usually means "the window missed
+    a pass", not "the catalog is down" - this probe tells the two cases
+    apart and collects example scenes for the message.
+
+    Returns {"kind": "scenes"|"nothing", "days": pad_days, "examples":
+    [{"datetime", "platform", "cloud"}, ...]}.
+    """
+    search_fn = search_fn or stac_client.search
+    d0 = (datetime.date.fromisoformat(str(date_start)[:10])
+          - datetime.timedelta(days=pad_days)).isoformat()
+    d1 = (datetime.date.fromisoformat(str(date_end)[:10])
+          + datetime.timedelta(days=pad_days)).isoformat()
+    probe = search_fn(bbox, d0, d1, max_cloud=100, limit=limit,
+                      collection=collection, platforms=None, timeout=timeout)
+    if not probe:
+        return {"kind": "nothing", "days": pad_days, "examples": []}
+    examples = []
+    for feat in probe[:5]:
+        props = feat.get("properties", {}) or {}
+        examples.append({
+            "datetime": str(props.get("datetime", ""))[:10],
+            "platform": props.get("platform", ""),
+            "cloud": props.get("eo:cloud_cover"),
+        })
+    return {"kind": "scenes", "days": pad_days, "examples": examples}
