@@ -24,6 +24,7 @@ from qgis.PyQt.QtWidgets import (
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
+    QFrame,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -32,6 +33,7 @@ from qgis.PyQt.QtWidgets import (
     QMessageBox,
     QProgressBar,
     QPushButton,
+    QScrollArea,
     QSpinBox,
     QTabWidget,
     QVBoxLayout,
@@ -103,7 +105,17 @@ class MainDialog(QDialog):
         return lst
 
     def _build_ui(self):
-        layout = QVBoxLayout(self)
+        # The form is taller than many screens: everything above the
+        # progress bar lives in a scrollable area, while progress, status
+        # and buttons stay pinned below it and remain visible at any
+        # window size.
+        outer = QVBoxLayout(self)
+        outer.setSpacing(6)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        content = QWidget()
+        layout = QVBoxLayout(content)
 
         bbox_box = QGroupBox("Area of interest (EPSG:4326)")
         form = QFormLayout(bbox_box)
@@ -164,9 +176,18 @@ class MainDialog(QDialog):
         ol.addRow(self.keep_bands)
         layout.addWidget(out_box)
 
+        # ---- scrollable form ends here; pinned bottom block below ----
+        layout.activate()
+        natural_h = content.sizeHint().height()
+        # widgetResizable would otherwise shrink the lists to the viewport
+        # instead of showing scrollbars: lock the form at its natural size.
+        content.setMinimumHeight(natural_h)
+        scroll.setWidget(content)
+        outer.addWidget(scroll, 1)
+
         self.progress = QProgressBar()
         self.progress.setRange(0, 100)
-        layout.addWidget(self.progress)
+        outer.addWidget(self.progress)
         self.status_label = QLabel("Ready.")
         self.status_label.setWordWrap(True)
         # Reserve two text lines permanently: a word-wrapped label whose
@@ -174,7 +195,7 @@ class MainDialog(QDialog):
         # visibly "breathed" during downloads).
         fm = self.status_label.fontMetrics()
         self.status_label.setFixedHeight(2 * fm.lineSpacing() + 6)
-        layout.addWidget(self.status_label)
+        outer.addWidget(self.status_label)
 
         self.buttons = QDialogButtonBox()
         self.search_btn = QPushButton("Search scenes")
@@ -192,7 +213,27 @@ class MainDialog(QDialog):
         self.buttons.addButton(self.download_btn, role.ActionRole)
         self.buttons.addButton(self.cancel_btn, role.ActionRole)
         self.buttons.addButton(self.close_btn, role.RejectRole)
-        layout.addWidget(self.buttons)
+        outer.addWidget(self.buttons)
+
+        # Open as tall as the form naturally is (no scrollbar on tall
+        # screens), but never bigger than the available screen area — on
+        # short screens the scroll area takes over and the form scrolls.
+        margins = outer.contentsMargins()
+        chrome = (margins.top() + margins.bottom() + 3 * outer.spacing()
+                  + self.progress.sizeHint().height()
+                  + self.status_label.minimumHeight()
+                  + self.buttons.sizeHint().height())
+        self._fit_to_screen(natural_h + chrome)
+
+    def _fit_to_screen(self, total_natural):
+        """Expand to the form's natural height, then cap to the screen."""
+        self.resize(self.width(), max(self.height(), total_natural))
+        scr = QApplication.primaryScreen()
+        if scr is None:
+            return
+        avail = scr.availableGeometry()
+        self.resize(min(self.width(), max(420, avail.width() - 40)),
+                    min(self.height(), max(420, avail.height() - 60)))
 
     def _build_s2_tab(self):
         tab = QWidget()
