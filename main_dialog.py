@@ -45,6 +45,7 @@ from .worker import Worker
 
 SETTINGS = "sentinel_mpc/"
 DEFAULT_BBOX = (-10.0, 50.0, 10.0, 60.0)
+ALL_BANDS_ITEM = "All bands"   # meta-item: select/deselect every band at once
 
 TAB_S2 = 0
 TAB_LANDSAT = 1
@@ -64,6 +65,7 @@ class MainDialog(QDialog):
         self.resize(560, 720)
         self._scene_feature = None
         self._worker = None
+        self._scene_dialog = None
         # Source and product selection are frozen at search time so that
         # switching tabs or missions afterwards cannot mix S2 and Landsat.
         self._pending = None
@@ -185,6 +187,20 @@ class MainDialog(QDialog):
                 item.setSelected(True)
         sl.addWidget(self.synth_list)
         v.addWidget(synth_box)
+
+        bands_box = QGroupBox("Individual bands (multi-select)")
+        bl = QVBoxLayout(bands_box)
+        self.s2_band_list = self._make_select_list()
+        self._add_all_bands_item(self.s2_band_list)
+        self.s2_band_list.itemClicked.connect(
+            lambda it, l=self.s2_band_list: self._on_band_item_clicked(l, it))
+        for band in syntheses.INDIVIDUAL_BANDS:
+            item = QListWidgetItem(syntheses.BAND_LABELS.get(band, band))
+            item.setData(Qt.ItemDataRole.UserRole, band)
+            item.setToolTip(band)
+            self.s2_band_list.addItem(item)
+        bl.addWidget(self.s2_band_list)
+        v.addWidget(bands_box, 1)
         return tab
 
     def _build_landsat_tab(self):
@@ -213,6 +229,9 @@ class MainDialog(QDialog):
         bands_box = QGroupBox("Individual bands (multi-select)")
         bl = QVBoxLayout(bands_box)
         self.ls_band_list = self._make_select_list()
+        self._add_all_bands_item(self.ls_band_list)
+        self.ls_band_list.itemClicked.connect(
+            lambda it, l=self.ls_band_list: self._on_band_item_clicked(l, it))
         bl.addWidget(self.ls_band_list)
         v.addWidget(bands_box, 1)
 
@@ -224,6 +243,21 @@ class MainDialog(QDialog):
 
         self._on_mission_changed()
         return tab
+
+    def _add_all_bands_item(self, lst):
+        """Meta-item on top of a band list: no UserRole -> never counted as a band."""
+        item = QListWidgetItem(ALL_BANDS_ITEM)
+        item.setToolTip("Select (or deselect) every band at once")
+        lst.addItem(item)
+
+    def _on_band_item_clicked(self, lst, item):
+        if item.text() != ALL_BANDS_ITEM:
+            return
+        state = item.isSelected()      # MultiSelection: click toggles
+        for i in range(lst.count()):
+            other = lst.item(i)
+            if other is not item:
+                other.setSelected(state)
 
     def _on_mission_changed(self):
         platform = self._landsat_mission()
@@ -239,6 +273,7 @@ class MainDialog(QDialog):
                 item.setSelected(True)
 
         self.ls_band_list.clear()
+        self._add_all_bands_item(self.ls_band_list)
         for band in landsat.bands_for(platform):
             item = QListWidgetItem(landsat.BAND_LABELS.get(band, band))
             item.setData(Qt.ItemDataRole.UserRole, band)
@@ -281,6 +316,14 @@ class MainDialog(QDialog):
     def _selected_syntheses(self):
         return [i.text() for i in self.synth_list.selectedItems()]
 
+    def _bands_from_list(self, lst):
+        # Items without UserRole data (the 'All bands' meta-item) are skipped.
+        return [d for d in (i.data(Qt.ItemDataRole.UserRole)
+                            for i in lst.selectedItems()) if d]
+
+    def _selected_s2_bands(self):
+        return self._bands_from_list(self.s2_band_list)
+
     def _landsat_mission(self):
         return self.mission_combo.currentData() or landsat.MISSION_KEYS[0]
 
@@ -288,7 +331,7 @@ class MainDialog(QDialog):
         return [i.text() for i in self.ls_product_list.selectedItems()]
 
     def _selected_landsat_bands(self):
-        return [i.data(Qt.ItemDataRole.UserRole) for i in self.ls_band_list.selectedItems()]
+        return self._bands_from_list(self.ls_band_list)
 
     def _current_source(self):
         return "Landsat" if self.tabs.currentIndex() == TAB_LANDSAT else "S2"
@@ -341,6 +384,7 @@ class MainDialog(QDialog):
             self.status_label.setText("Cancelling...")
 
     def closeEvent(self, event):  # noqa: N802
+        self._close_scene_dialog()
         if self._worker is not None:
             # Cancel and give short-running jobs a chance to finish. If the
             # job cannot stop within 5 s (a long GDAL step), park the worker
@@ -364,9 +408,10 @@ class MainDialog(QDialog):
         source = self._current_source()
         if source == "S2":
             products = self._selected_syntheses()
-            bands, mission = [], None
-            if not products:
-                QMessageBox.warning(self, "No syntheses", "Pick at least one synthesis.")
+            bands, mission = self._selected_s2_bands(), None
+            if not products and not bands:
+                QMessageBox.warning(self, "No syntheses",
+                                    "Pick at least one synthesis or individual band.")
                 return
         else:
             mission = self._landsat_mission()
@@ -382,6 +427,7 @@ class MainDialog(QDialog):
             "source": source, "mission": mission,
             "products": products, "bands": bands,
         }
+        self._close_scene_dialog()      # a new search invalidates the old picker
         bbox = self._bbox()
         d0 = self.date_start.date().toString("yyyy-MM-dd")
         d1 = self.date_end.date().toString("yyyy-MM-dd")
@@ -405,14 +451,41 @@ class MainDialog(QDialog):
             self.status_label.setText("No scenes found.")
             QMessageBox.information(self, "No scenes", "No scenes matched the criteria.")
             return
-        dlg = SceneDialog(features, token, parent=self)
-        if dlg.exec() != QDialog.DialogCode.Accepted:
-            self.status_label.setText("Selection cancelled.")
-            return
-        self._scene_feature = dlg.selected_feature
-        self.download_btn.setEnabled(True)
+        self._close_scene_dialog()      # a previous picker may still be open
+        dlg = SceneDialog(features, token, self.iface.mapCanvas(), parent=self)
+        self._scene_dialog = dlg
+        dlg.accepted.connect(self._on_scene_accepted)
+        dlg.rejected.connect(self._on_scene_rejected)
+        # Non-modal: the map stays usable, so the footprint outline of the
+        # highlighted scene can be compared with the search area (pan/zoom
+        # while the picker is open).
+        dlg.show()
         self.status_label.setText(
-            f"Scene selected: {self._scene_feature.get('id', '')}. Click 'Download and build'.")
+            "Pick a scene — its footprint is outlined on the map "
+            "(pan/zoom to inspect). Press OK in the picker to confirm.")
+
+    def _on_scene_accepted(self):
+        dlg = self._scene_dialog
+        if dlg is not None and dlg.selected_feature is not None:
+            self._scene_feature = dlg.selected_feature
+            self.download_btn.setEnabled(True)
+            self.status_label.setText(
+                f"Scene selected: {self._scene_feature.get('id', '')}. "
+                "Click 'Download and build'.")
+        self._close_scene_dialog()
+
+    def _on_scene_rejected(self):
+        if self._scene_feature is None:
+            self.status_label.setText("Selection cancelled.")
+        self._close_scene_dialog()
+
+    def _close_scene_dialog(self):
+        dlg, self._scene_dialog = self._scene_dialog, None
+        if dlg is not None:
+            # close() triggers done(): the thumbnail worker is stopped and
+            # the footprint rubber band cleared; deleteLater is safe here.
+            dlg.close()
+            dlg.deleteLater()
 
     # ---- download + build ----
 

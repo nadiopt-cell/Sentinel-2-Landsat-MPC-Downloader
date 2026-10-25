@@ -8,7 +8,7 @@ import re
 from datetime import datetime
 
 from qgis.PyQt.QtCore import QSize, Qt
-from qgis.PyQt.QtGui import QIcon, QPixmap
+from qgis.PyQt.QtGui import QColor, QIcon, QPixmap
 from qgis.PyQt.QtWidgets import (
     QAbstractItemView,
     QDialog,
@@ -20,9 +20,25 @@ from qgis.PyQt.QtWidgets import (
     QVBoxLayout,
 )
 
+from qgis.core import (
+    Qgis,
+    QgsCoordinateReferenceSystem,
+    QgsCoordinateTransform,
+    QgsGeometry,
+    QgsPointXY,
+    QgsProject,
+)
+from qgis.gui import QgsRubberBand
+
 from . import downloader, stac_client
 from .token_cache import profile_dir
 from .worker import Worker
+
+try:                                  # QGIS >= 3.28 / 4.x
+    _LINE_GEOMETRY = Qgis.GeometryType.Line
+except AttributeError:                # older QGIS 3.x
+    from qgis.core import QgsWkbTypes
+    _LINE_GEOMETRY = QgsWkbTypes.LineGeometry
 
 THUMB_COL, DATE_COL, CLOUD_COL, TILE_COL, ID_COL = range(5)
 THUMB_SIZE = 96
@@ -67,11 +83,41 @@ def _prune_thumb_cache(max_files=THUMB_CACHE_KEEP):
             pass
 
 
+def _rings_geometry(rings, canvas):
+    """Build a QgsGeometry (multi-polygon) from footprint rings, reprojected
+    from EPSG:4326 into the canvas CRS, or None on any failure."""
+    if canvas is None or not rings:
+        return None
+    try:
+        parts = [[QgsPointXY(x, y) for x, y in ring] for ring in rings]
+        geom = QgsGeometry.fromMultiPolygonXY([parts])
+        src = QgsCoordinateReferenceSystem("EPSG:4326")
+        dst = canvas.mapSettings().destinationCrs()
+        if src != dst:
+            ct = QgsCoordinateTransform(src, dst, QgsProject.instance())
+            geom.transform(ct)
+        return geom
+    except Exception:  # noqa: BLE001  (dateline-crossing, degenerate rings)
+        return None
+
+
 class SceneDialog(QDialog):
-    def __init__(self, features, token, parent=None):
+    def __init__(self, features, token, canvas=None, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Select a scene")
         self.resize(900, 520)
+        self.canvas = canvas
+        # Transient outline of the selected scene on the map (no layer is
+        # added to the project); the dialog is shown non-modally so the
+        # user can pan/zoom and see how the scene fits the search area.
+        self._rubber = None
+        if canvas is not None:
+            try:
+                self._rubber = QgsRubberBand(canvas, _LINE_GEOMETRY)
+                self._rubber.setWidth(3)
+                self._rubber.setColor(QColor(255, 200, 0, 230))
+            except Exception:  # noqa: BLE001
+                self._rubber = None
         # Collision-safe keys: STAC ids are unique in practice, but a
         # duplicated id used to silently overwrite a scene in the dict.
         self.features = {}
@@ -90,7 +136,7 @@ class SceneDialog(QDialog):
         layout = QVBoxLayout(self)
         self.info_label = QLabel(
             f"Found {count} scenes (newest first; click a header to sort). "
-            "Loading thumbnails...")
+            "The selected scene's footprint is outlined on the map.")
         layout.addWidget(self.info_label)
 
         t = self.table = QTableWidget(0, 5, self)
@@ -108,6 +154,7 @@ class SceneDialog(QDialog):
         t.setColumnHidden(ID_COL, True)
         t.horizontalHeader().setStretchLastSection(True)
         t.cellDoubleClicked.connect(lambda row, _c: self._accept_row(row))
+        t.itemSelectionChanged.connect(self._show_footprint)
         layout.addWidget(t)
 
         self.progress = QProgressBar(self)
@@ -210,6 +257,24 @@ class SceneDialog(QDialog):
                     self.table.item(row, THUMB_COL).setIcon(QIcon(pix))
                 break
 
+    # ---- footprint outline on the map ----
+
+    def _show_footprint(self):
+        """Draw the footprint of the currently selected row on the canvas."""
+        if self._rubber is None:
+            return
+        self._rubber.reset()
+        rows = self.table.selectionModel().selectedRows() \
+            if self.table.selectionModel() else []
+        key = self._row_key(rows[0].row()) if rows else None
+        feat = self.features.get(key) if key else None
+        if feat is None:
+            return
+        geom = _rings_geometry(stac_client.footprint_rings(feat), self.canvas)
+        if geom is not None:
+            # An invalid CRS means the geometry is already in canvas coords.
+            self._rubber.setToGeometry(geom, QgsCoordinateReferenceSystem())
+
     # ---- selection ----
 
     def _on_ok(self):
@@ -228,4 +293,8 @@ class SceneDialog(QDialog):
     def done(self, result):
         if self._worker is not None and not self._worker.stop(5000):
             self._worker.detach()  # never destroy a running QThread
+        if self._rubber is not None:
+            self._rubber.reset()
+            self._rubber.deleteLater()
+            self._rubber = None
         super().done(result)

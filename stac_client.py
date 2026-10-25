@@ -180,6 +180,36 @@ def feature_thumbnail_href(feature):
     return None
 
 
+def footprint_rings(feature):
+    """Outer rings of the scene footprint as [[(x, y), ...], ...] (EPSG:4326).
+
+    Reads the GeoJSON 'geometry' (Polygon or MultiPolygon); falls back to
+    the 'bbox' property as a rectangle when the geometry is missing or
+    unparsable. Returns [] when neither is usable. Pure function (Qt-free)
+    so the GUI layer can turn it into a map outline.
+    """
+    rings = []
+    try:
+        geom = feature.get("geometry") or {}
+        coords = geom.get("coordinates")
+        polys = []
+        if geom.get("type") == "Polygon" and coords:
+            polys = [coords]
+        elif geom.get("type") == "MultiPolygon" and coords:
+            polys = coords
+        elif coords is None:
+            bbox = feature.get("bbox")
+            if bbox and len(bbox) >= 4:
+                x0, y0, x1, y1 = (float(c) for c in bbox[:4])
+                polys = [[[[x0, y0], [x1, y0], [x1, y1], [x0, y1], [x0, y0]]]]
+        for poly in polys:
+            if poly and poly[0] and len(poly[0]) >= 4:
+                rings.append([(float(c[0]), float(c[1])) for c in poly[0]])
+    except (TypeError, ValueError, AttributeError):
+        return []
+    return rings
+
+
 _BAND_FALLBACK = {
     "B01": "coastal", "B02": "blue", "B03": "green", "B04": "red",
     "B05": "rededge1", "B06": "rededge2", "B07": "rededge3", "B08": "nir",

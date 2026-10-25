@@ -56,7 +56,7 @@ def run(feature, product_names, out_dir, report, cancelled, keep_bands=True,
         target_res = syntheses.TARGET_RESOLUTION_M
         band_res = syntheses.BAND_RESOLUTION
         band_defaults = ("B04", None)
-        bands = set(syntheses.required_bands(product_names))
+        bands = syntheses.product_bands(product_names, band_names)
 
     token = get_token(collection)
     pairs, url_to_band = [], {}
@@ -122,7 +122,8 @@ def run(feature, product_names, out_dir, report, cancelled, keep_bands=True,
         p = bands_at_target.get(band) or band_paths.get(band)
         if not p:
             continue
-        label = landsat.BAND_LABELS.get(band, band) if source == "Landsat" else band
+        label_map = landsat.BAND_LABELS if source == "Landsat" else syntheses.BAND_LABELS
+        label = label_map.get(band, band)
         outputs.append({
             "path": str(p),
             "name": f"{label} band - {scene_id}",

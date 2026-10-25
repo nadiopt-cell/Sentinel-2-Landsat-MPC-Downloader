@@ -92,3 +92,32 @@ def required_bands(preset_names):
         elif spec["type"] == "index":
             bands.update(spec["bands"])
     return bands
+
+
+# Individual L2A bands offered as standalone downloads (spectral order).
+# B10 (cirrus, L1C-only) is not delivered in Level-2A products.
+INDIVIDUAL_BANDS = ["B01", "B02", "B03", "B04", "B05", "B06", "B07",
+                    "B08", "B8A", "B09", "B11", "B12"]
+
+BAND_LABELS = {
+    "B01": "Coastal / aerosol",
+    "B02": "Blue",
+    "B03": "Green",
+    "B04": "Red",
+    "B05": "Red edge 1",
+    "B06": "Red edge 2",
+    "B07": "Red edge 3",
+    "B08": "NIR",
+    "B8A": "Narrow NIR",
+    "B09": "Water vapour",
+    "B11": "SWIR1 (1.6 um)",
+    "B12": "SWIR2 (2.2 um)",
+}
+
+
+def product_bands(product_names, extra_bands=()):
+    """Union of the bands required by the selected presets and any
+    individually requested bands (None entries are ignored)."""
+    bands = required_bands(product_names)
+    bands.update(b for b in (extra_bands or ()) if b)
+    return bands
