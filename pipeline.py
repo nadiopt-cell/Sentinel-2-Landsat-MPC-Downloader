@@ -1,10 +1,13 @@
 """
 Qt-free download + build pipeline (runs in a worker thread).
 
-Handles both data sources:
+Handles the data sources:
   - "S2":      Sentinel-2 L2A (syntheses.PRESETS, resampling to 10 m)
   - "Landsat": Landsat C2 L2, missions 4-9 (landsat.PRODUCTS + individual
                band downloads, all bands already on a 30 m grid)
+  - "ASTER":   ASTER L1T swaths (aster.PRODUCTS; each granule holds up to
+               three multi-band COG assets that are split into single-band
+               rasters; every product uses one swath, so no resampling)
 
 Everything touching QgsProject/QgsRasterLayer stays in the GUI thread;
 this module only returns the list of produced files.
@@ -14,7 +17,7 @@ import re
 import datetime
 from pathlib import Path
 
-from . import downloader, landsat, processor, stac_client, syntheses
+from . import aster, downloader, landsat, processor, stac_client, syntheses
 from .downloader import Cancelled
 from .token_cache import get_token
 
@@ -31,7 +34,7 @@ def run(feature, product_names, out_dir, report, cancelled, keep_bands=True,
     """Download required bands and build the selected products.
 
     product_names: syntheses/indices to build (per source registry).
-    band_names:    Landsat individual bands to also download as rasters.
+    band_names:    Landsat/ASTER individual bands to also save as rasters.
     mission:       STAC platform key (Landsat only, e.g. "landsat-9").
     report(percent, message); cancelled() -> bool.
     Returns [{"path", "name", "palette"}].
@@ -51,6 +54,17 @@ def run(feature, product_names, out_dir, report, cancelled, keep_bands=True,
         band_res = {}                       # C2 L2: everything already 30 m
         band_defaults = ("red", (landsat.DEFAULT_SCALE, landsat.DEFAULT_OFFSET))
         bands = landsat.required_bands(mission or "", product_names, band_names)
+    elif source == "ASTER":
+        unknown = [n for n in product_names if n not in aster.PRODUCTS]
+        if unknown:
+            raise RuntimeError(
+                f"{', '.join(unknown)} is not available for ASTER")
+        specs = {n: aster.PRODUCTS[n] for n in product_names}
+        collection = aster.COLLECTION
+        # radiance DN = DN - 1; the per-band unit conversion coefficients
+        # are not exposed via STAC, so the NDVI stays relative
+        band_defaults = ("B3N", (aster.INDEX_SCALE, aster.INDEX_OFFSET))
+        bands = aster.required_bands(product_names, band_names)
     else:
         specs = {n: syntheses.PRESETS[n] for n in product_names}
         collection = stac_client.S2L2A_COLLECTION
@@ -60,16 +74,31 @@ def run(feature, product_names, out_dir, report, cancelled, keep_bands=True,
         bands = syntheses.product_bands(product_names, band_names)
 
     token = get_token(collection)
-    pairs, url_to_band = [], {}
-    for band in sorted(bands):
-        href = stac_client.get_asset_href(feature, band)
-        if not href:
-            raise RuntimeError(f"Scene has no asset for band {band}")
-        url = stac_client.signed_url(href, token)
-        url_to_band[url] = band
-        pairs.append((url, str(scene_dir / f"{band}.tif")))
+    pairs, url_to_band, url_to_group = [], {}, {}
+    if source == "ASTER":
+        # One multi-band COG per swath: download whole assets, then split.
+        groups = aster.swaths_for(bands)
+        for asset in sorted(groups):
+            href = aster.asset_href(feature, asset)
+            if not href:
+                have = ", ".join(sorted(aster.available_groups(feature))) or "none"
+                raise RuntimeError(
+                    f"Scene has no {asset} data (this granule carries: {have})")
+            url = stac_client.signed_url(href, token)
+            url_to_group[url] = (asset, groups[asset])
+            pairs.append((url, str(scene_dir / f"{asset}.tif")))
+        report(1, "Downloading {} swath file(s): {}".format(
+            len(pairs), ", ".join(sorted(groups))))
+    else:
+        for band in sorted(bands):
+            href = stac_client.get_asset_href(feature, band)
+            if not href:
+                raise RuntimeError(f"Scene has no asset for band {band}")
+            url = stac_client.signed_url(href, token)
+            url_to_band[url] = band
+            pairs.append((url, str(scene_dir / f"{band}.tif")))
 
-    report(1, f"Downloading {len(bands)} band(s): {', '.join(sorted(bands))}")
+        report(1, f"Downloading {len(bands)} band(s): {', '.join(sorted(bands))}")
 
     def on_dl(done, total, files_done, files_total):
         # `total` grows as Content-Length headers arrive and can briefly be
@@ -79,12 +108,24 @@ def run(feature, product_names, out_dir, report, cancelled, keep_bands=True,
         report(max(1, pct), f"Downloading... {mb:.0f} MB ({files_done}/{files_total} files)")
 
     results = downloader.download(pairs, progress_cb=on_dl, cancelled=cancelled)
-    band_paths = {url_to_band[u]: p for u, p in results.items()}
 
-    report(45, f"Resampling to {target_res} m where needed...")
-    bands_at_target = processor.resample_bands(
-        band_paths, scene_dir / f"{target_res}m", cancelled=cancelled,
-        band_res=band_res, target_res=target_res)
+    if source == "ASTER":
+        # Split the swath COGs into single-band rasters. Every ASTER
+        # product uses bands from one swath only (15/30/90 m never mix),
+        # so nothing is resampled - each product keeps its native grid.
+        band_paths = {}
+        for url, path in results.items():
+            asset, band_list = url_to_group[url]
+            band_paths.update(processor.extract_swath_bands(
+                path, scene_dir, band_list, cancelled=cancelled))
+        bands_at_target = band_paths
+    else:
+        band_paths = {url_to_band[u]: p for u, p in results.items()}
+
+        report(45, f"Resampling to {target_res} m where needed...")
+        bands_at_target = processor.resample_bands(
+            band_paths, scene_dir / f"{target_res}m", cancelled=cancelled,
+            band_res=band_res, target_res=target_res)
     if cancelled():
         raise Cancelled()
 
@@ -123,7 +164,12 @@ def run(feature, product_names, out_dir, report, cancelled, keep_bands=True,
         p = bands_at_target.get(band) or band_paths.get(band)
         if not p:
             continue
-        label_map = landsat.BAND_LABELS if source == "Landsat" else syntheses.BAND_LABELS
+        if source == "Landsat":
+            label_map = landsat.BAND_LABELS
+        elif source == "ASTER":
+            label_map = aster.BAND_LABELS
+        else:
+            label_map = syntheses.BAND_LABELS
         label = label_map.get(band, band)
         outputs.append({
             "path": str(p),

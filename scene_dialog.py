@@ -1,6 +1,8 @@
 """
 Scene picker: sortable table of STAC features with preview thumbnails
-(loaded in the background). Select a row and press OK (or double-click).
+(loaded in the background). Select a row and press OK (or double-click);
+checking scenes selects them for a batch download and the map outline
+follows the checked row.
 """
 
 import hashlib
@@ -139,8 +141,8 @@ class SceneDialog(QDialog):
         layout = QVBoxLayout(self)
         self.info_label = QLabel(
             f"Found {count} scenes (newest first; click a header to sort). "
-            "Check scenes to download several at once; the highlighted "
-            "row's footprint is outlined on the map.")
+            "Check scenes to download several at once — the checked (or "
+            "highlighted) row's footprint is outlined on the map.")
         layout.addWidget(self.info_label)
 
         t = self.table = QTableWidget(0, 6, self)
@@ -158,7 +160,7 @@ class SceneDialog(QDialog):
         t.setColumnWidth(TILE_COL, 100)
         t.setColumnHidden(ID_COL, True)
         t.horizontalHeader().setStretchLastSection(True)
-        t.cellDoubleClicked.connect(lambda row, _c: self._accept_row(row))
+        t.cellDoubleClicked.connect(self._on_cell_double_clicked)
         t.itemSelectionChanged.connect(self._show_footprint)
         layout.addWidget(t)
 
@@ -229,6 +231,10 @@ class SceneDialog(QDialog):
         t.setSortingEnabled(True)
         if t.rowCount():
             t.selectRow(0)
+        # From here on, checkbox toggles move the selection (and the map
+        # outline) to the checked scene. Connected after _populate so the
+        # bulk setItem() calls above cannot trigger it.
+        t.itemChanged.connect(self._on_check_changed)
 
     def _row_key(self, row):
         item = self.table.item(row, ID_COL)
@@ -237,16 +243,33 @@ class SceneDialog(QDialog):
         return item.data(Qt.ItemDataRole.UserRole) or item.text()
 
     def _set_all_checks(self, state):
-        for row in range(self.table.rowCount()):
-            item = self.table.item(row, CHECK_COL)
+        # Signals are blocked so 100 checked rows cost one repaint and one
+        # outline update (not 100 of each); itemChanged would otherwise
+        # selectRow() per row while the user only sees the final state.
+        t = self.table
+        t.blockSignals(True)
+        for row in range(t.rowCount()):
+            item = t.item(row, CHECK_COL)
             if item is not None:
                 item.setCheckState(state)
+        t.blockSignals(False)
+        if state == Qt.CheckState.Checked and t.rowCount():
+            t.selectRow(0)          # outline shows the first batch scene
 
     def _checked_rows(self):
         return [row for row in range(self.table.rowCount())
                 if self.table.item(row, CHECK_COL) is not None
                 and self.table.item(row, CHECK_COL).checkState()
                 == Qt.CheckState.Checked]
+
+    def _on_check_changed(self, item):
+        """A checkbox toggled -> select its row, so the highlighted row and
+        the map outline follow the scene being added to (or removed from)
+        the batch. itemChanged also fires when thumbnails set their icons
+        (other columns) — those must not move the selection."""
+        if item.column() != CHECK_COL:
+            return
+        self.table.selectRow(item.row())
 
     # ---- thumbnails (background) ----
 
@@ -277,8 +300,18 @@ class SceneDialog(QDialog):
         self._worker.item.connect(self._on_thumb)
         self._worker.succeeded.connect(lambda _r: self.info_label.setText(
             f"Found {len(self.features)} scenes. Select one and press OK."))
-        self._worker.failed.connect(lambda _e: None)
+        self._worker.failed.connect(self._on_thumbs_failed)
         self._worker.start()
+
+    def _on_thumbs_failed(self, err):
+        """Previews are best-effort and must never block the picker — but a
+        dead batch used to leave a silent, frozen progress bar with no
+        explanation."""
+        if err:
+            self.progress.setValue(0)
+            self.info_label.setText(
+                "Some previews failed to load (the scenes themselves are "
+                "unaffected — select and download as usual).")
 
     def _on_thumb(self, payload):
         key, path = payload
@@ -317,6 +350,15 @@ class SceneDialog(QDialog):
             self._rubber.setToGeometry(geom, QgsCoordinateReferenceSystem())
 
     # ---- selection ----
+
+    def _on_cell_double_clicked(self, row, col):
+        """Double-click confirms a scene — except on the checkbox cell:
+        there a rapid double-click is just an impatient check toggle, and
+        it used to accept the whole dialog (picking that single scene and
+        silently dropping every other check)."""
+        if col == CHECK_COL:
+            return
+        self._accept_row(row)
 
     def _on_ok(self):
         if self._checked_rows():

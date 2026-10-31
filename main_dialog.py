@@ -1,8 +1,8 @@
 """
 Main dialog: AOI, dates, cloud cover, products -> search -> pick scene(s) ->
-download + build (one output folder per scene). Two source tabs: Sentinel-2
-L2A and Landsat C2 L2 (missions selected inside the Landsat tab). All
-network/disk/GDAL work runs in a background thread.
+download + build (one output folder per scene). Three source tabs: Sentinel-2
+L2A, Landsat C2 L2 (missions selected inside the Landsat tab) and ASTER L1T.
+All network/disk/GDAL work runs in a background thread.
 """
 
 from pathlib import Path
@@ -40,7 +40,7 @@ from qgis.PyQt.QtWidgets import (
     QWidget,
 )
 
-from . import landsat, pipeline, stac_client, syntheses
+from . import aster, landsat, pipeline, stac_client, syntheses
 from .loader import add_to_project
 from .scene_dialog import SceneDialog
 from .token_cache import get_token
@@ -67,6 +67,7 @@ def _clip_msg(msg):
 
 TAB_S2 = 0
 TAB_LANDSAT = 1
+TAB_ASTER = 2
 
 
 def _default_out_dir():
@@ -160,6 +161,7 @@ class MainDialog(QDialog):
         self.tabs = QTabWidget()
         self.tabs.addTab(self._build_s2_tab(), "Sentinel-2")
         self.tabs.addTab(self._build_landsat_tab(), "Landsat")
+        self.tabs.addTab(self._build_aster_tab(), "ASTER")
         layout.addWidget(self.tabs, 1)
 
         out_box = QGroupBox("Output")
@@ -309,6 +311,65 @@ class MainDialog(QDialog):
         self._on_mission_changed()
         return tab
 
+    def _build_aster_tab(self):
+        tab = QWidget()
+        v = QVBoxLayout(tab)
+
+        prod_box = QGroupBox("Standard syntheses and indices (multi-select)")
+        pl = QVBoxLayout(prod_box)
+        self.aster_product_list = self._make_select_list()
+        for name, spec in aster.PRODUCTS.items():
+            item = QListWidgetItem(name)
+            item.setToolTip(spec.get("description", ""))
+            self.aster_product_list.addItem(item)
+            if name == "False Color":
+                item.setSelected(True)
+        pl.addWidget(self.aster_product_list)
+        v.addWidget(prod_box)
+
+        bands_box = QGroupBox("Individual bands (multi-select)")
+        bl = QVBoxLayout(bands_box)
+        self.aster_band_list = self._make_select_list()
+        self._add_all_bands_item(self.aster_band_list)
+        self.aster_band_list.itemClicked.connect(
+            lambda it, l=self.aster_band_list: self._on_band_item_clicked(l, it))
+        for band in aster.INDIVIDUAL_BANDS:
+            item = QListWidgetItem(aster.BAND_LABELS.get(band, band))
+            item.setData(Qt.ItemDataRole.UserRole, band)
+            item.setToolTip(band)
+            self.aster_band_list.addItem(item)
+        bl.addWidget(self.aster_band_list)
+        v.addWidget(bands_box, 1)
+
+        dates_btn = QPushButton("Use ASTER archive dates (2000-2006)")
+        dates_btn.setToolTip(
+            "On Planetary Computer the ASTER archive ends 2006-12-31")
+        dates_btn.clicked.connect(self._use_aster_dates)
+        row = QHBoxLayout()
+        row.addWidget(dates_btn)
+        row.addStretch(1)
+        dates_w = QWidget()
+        dates_w.setLayout(row)
+        v.addWidget(dates_w)
+
+        note = QLabel(
+            "Note: on Planetary Computer the ASTER archive covers "
+            "2000-03-04 to 2006-12-31 only - newer searches return "
+            "nothing. ASTER images on demand, so scenes are irregular: "
+            "use a wide date window. Some granules (night or fully "
+            "overcast) carry only the thermal TIR swath; VNIR/SWIR "
+            "products fail for them. TIR bands are raw radiance counts "
+            "(no temperature calibration) and NDVI is relative (no "
+            "atmospheric correction).")
+        note.setWordWrap(True)
+        v.addWidget(note)
+        return tab
+
+    def _use_aster_dates(self):
+        """Point the shared date fields at the ASTER archive on MPC."""
+        self.date_start.setDate(QDate.fromString(aster.ARCHIVE_START, "yyyy-MM-dd"))
+        self.date_end.setDate(QDate.fromString(aster.ARCHIVE_END, "yyyy-MM-dd"))
+
     def _add_all_bands_item(self, lst):
         """Meta-item on top of a band list: no UserRole -> never counted as a band."""
         item = QListWidgetItem(ALL_BANDS_ITEM)
@@ -398,8 +459,19 @@ class MainDialog(QDialog):
     def _selected_landsat_bands(self):
         return self._bands_from_list(self.ls_band_list)
 
+    def _selected_aster_products(self):
+        return [i.text() for i in self.aster_product_list.selectedItems()]
+
+    def _selected_aster_bands(self):
+        return self._bands_from_list(self.aster_band_list)
+
     def _current_source(self):
-        return "Landsat" if self.tabs.currentIndex() == TAB_LANDSAT else "S2"
+        idx = self.tabs.currentIndex()
+        if idx == TAB_LANDSAT:
+            return "Landsat"
+        if idx == TAB_ASTER:
+            return "ASTER"
+        return "S2"
 
     def _bbox(self):
         return [self.min_x.value(), self.min_y.value(), self.max_x.value(), self.max_y.value()]
@@ -478,6 +550,27 @@ class MainDialog(QDialog):
                 QMessageBox.warning(self, "No syntheses",
                                     "Pick at least one synthesis or individual band.")
                 return
+        elif source == "ASTER":
+            mission = None
+            products = self._selected_aster_products()
+            bands = self._selected_aster_bands()
+            if not products and not bands:
+                QMessageBox.warning(self, "Nothing selected",
+                                    "Pick at least one synthesis or individual band.")
+                return
+            # The Planetary Computer ASTER archive ends 2006-12-31: a window
+            # fully outside it can only be empty, so explain immediately.
+            a_start = QDate.fromString(aster.ARCHIVE_START, "yyyy-MM-dd")
+            a_end = QDate.fromString(aster.ARCHIVE_END, "yyyy-MM-dd")
+            if (self.date_end.date() < a_start
+                    or self.date_start.date() > a_end):
+                QMessageBox.warning(
+                    self, "Outside the ASTER archive",
+                    f"On Planetary Computer the ASTER archive covers "
+                    f"{aster.ARCHIVE_START} to {aster.ARCHIVE_END}.\n\n"
+                    "Press 'Use ASTER archive dates (2000-2006)' in the "
+                    "ASTER tab to set the date window.")
+                return
         else:
             mission = self._landsat_mission()
             products = self._selected_landsat_products()
@@ -492,13 +585,16 @@ class MainDialog(QDialog):
         d0 = self.date_start.date().toString("yyyy-MM-dd")
         d1 = self.date_end.date().toString("yyyy-MM-dd")
         cloud = self.cloud.value()
-        collection = landsat.COLLECTION if source == "Landsat" else stac_client.S2L2A_COLLECTION
+        collection = (landsat.COLLECTION if source == "Landsat"
+                      else aster.COLLECTION if source == "ASTER"
+                      else stac_client.S2L2A_COLLECTION)
         # bbox/dates are kept for the empty-search probe (see
-        # _probe_empty_search).
+        # _probe_empty_search); collection identifies the source for it too.
         self._pending = {
             "source": source, "mission": mission,
             "products": products, "bands": bands,
             "bbox": bbox, "d0": d0, "d1": d1,
+            "collection": collection,
         }
         self._close_scene_dialog()      # a new search invalidates the old picker
 
@@ -541,8 +637,9 @@ class MainDialog(QDialog):
             self.status_label.setText("No scenes found.")
             QMessageBox.information(self, "No scenes", "No scenes matched the criteria.")
             return
-        collection = (landsat.COLLECTION if pending.get("source") == "Landsat"
-                      else stac_client.S2L2A_COLLECTION)
+        collection = (pending.get("collection")
+                      or (landsat.COLLECTION if pending.get("source") == "Landsat"
+                          else stac_client.S2L2A_COLLECTION))
 
         def job(w):
             return pipeline.diagnose_empty(bbox, d0, d1, collection)

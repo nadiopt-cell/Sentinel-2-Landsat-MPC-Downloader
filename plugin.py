@@ -15,7 +15,7 @@ def resources_path(*parts):
 
 
 class SentinelPlugin:
-    PLUGIN_NAME = "Sentinel-2 & Landsat MPC Downloader"
+    PLUGIN_NAME = "Sentinel-2 & Landsat & ASTER MPC Downloader"
 
     def __init__(self, iface):
         self.iface = iface
@@ -27,15 +27,15 @@ class SentinelPlugin:
                               self.iface.mainWindow())
         self.action.setObjectName("SentinelPluginAction")
         self.action.setStatusTip(
-            "Search and download Sentinel-2 L2A and Landsat C2 L2 "
+            "Search and download Sentinel-2 L2A, Landsat C2 L2 and ASTER L1T "
             "from Microsoft Planetary Computer")
         self.action.triggered.connect(self.run)
         self.iface.addToolBarIcon(self.action)
-        self.iface.addPluginToMenu("&Sentinel / Landsat", self.action)
+        self.iface.addPluginToMenu("&Sentinel / Landsat / ASTER", self.action)
 
     def unload(self):
         if self.action:
-            self.iface.removePluginMenu("&Sentinel / Landsat", self.action)
+            self.iface.removePluginMenu("&Sentinel / Landsat / ASTER", self.action)
             self.iface.removeToolBarIcon(self.action)
             self.action.deleteLater()
             self.action = None

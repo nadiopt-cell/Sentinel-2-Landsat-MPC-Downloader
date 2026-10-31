@@ -3,6 +3,8 @@ Raster processing with plain GDAL (osgeo) + numpy:
   - resample coarse bands to the mission's target resolution (parallel
     across bands) - Sentinel-2: 20/60 m -> 10 m; Landsat C2 L2 needs no
     resampling (all bands arrive on the same 30 m grid),
+  - split multi-band swath assets into single-band rasters (ASTER L1T
+    delivers one COG per swath: VNIR/SWIR/TIR),
   - RGB composites (VRT -> compressed GeoTIFF),
   - normalized-difference indices computed in row strips (low memory).
 
@@ -282,3 +284,47 @@ def build_index(name, spec, band_paths, out_path, scale=0.0001, offset=0.0,
         # Drop every dataset/band reference so the file handles really close.
         band = dst = ds_a = ds_b = None
     return str(out_path)
+
+
+# ---------------------------------------------------------------- ASTER ----
+
+def extract_swath_bands(src_path, out_dir, bands, cancelled=None):
+    """Split a multi-band swath GeoTIFF (ASTER VNIR/SWIR/TIR COG) into
+    single-band GeoTIFFs named <band>.tif.
+
+    `bands` lists the output band keys in GDAL band order (the i-th entry,
+    1-based, is copied from source band i). Each output gets nodata 0:
+    the STAC metadata declares fill DN 0, but the COG itself carries no
+    nodata tag. Existing outputs are reused, so re-running a scene costs
+    nothing.
+    """
+    gdal = _gdal()
+    ds = gdal.Open(_p(src_path))
+    if ds is None:
+        raise RuntimeError(_err(f"Cannot open {src_path}"))
+    try:
+        if ds.RasterCount < len(bands):
+            raise RuntimeError(
+                f"{src_path} has {ds.RasterCount} band(s), expected {len(bands)}")
+        out_dir = Path(out_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out = {}
+        for i, band in enumerate(bands, start=1):
+            if cancelled is not None and cancelled():
+                raise Cancelled()
+            dst = out_dir / f"{band}.tif"
+            if dst.exists() and dst.stat().st_size > 0:
+                out[band] = str(dst)
+                continue
+            res = gdal.Translate(
+                _p(dst), ds,
+                options=gdal.TranslateOptions(
+                    format="GTiff", bandList=[i], noData=NODATA_DN,
+                    creationOptions=GTIFF_OPTS))
+            if res is None:
+                raise RuntimeError(_err(f"gdal.Translate failed for band {band}"))
+            res = None
+            out[band] = str(dst)
+    finally:
+        ds = None  # close before the caller may delete the swath file
+    return out
